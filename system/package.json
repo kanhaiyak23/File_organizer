@@ -1,0 +1,25 @@
+{
+    "name": "file-organizer-system",
+    "version": "1.0.0",
+    "description": "User-space file system manager for OS course project",
+    "type": "module",
+    "main": "src/cli/index.js",
+    "scripts": {
+        "cli": "node src/cli/index.js",
+        "server": "node src/api/server.js",
+        "test": "node --test"
+    },
+    "keywords": [
+        "file-system",
+        "os",
+        "organizer"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "commander": "^12.1.0",
+        "cors": "^2.8.5",
+        "express": "^4.21.0",
+        "fs-extra": "^11.2.0"
+    }
+}
