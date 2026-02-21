@@ -14,6 +14,12 @@ import path from 'path';
 import { FileEntry } from './models.js';
 
 export class FileSystemObserver {
+    /**
+     * Creates a new FileSystemObserver instance
+     * Performs read-only file system analysis without modifying any files
+     * 
+     * @param {Object|null} logger - Optional logger instance for structured logging
+     */
     constructor(logger = null) {
         this.logger = logger;
     }
@@ -59,6 +65,13 @@ export class FileSystemObserver {
 
     /**
      * Internal recursive directory scanner
+     * Traverses directory tree, extracts metadata using lstat, and builds FileEntry objects
+     * Handles symlinks properly and gracefully manages permission errors
+     * 
+     * @param {string} dirPath - Directory path to scan
+     * @param {Object} options - Scan options (recursive, includeHidden, includeDirectories)
+     * @returns {Promise<FileEntry[]>} Array of file entries with full metadata
+     * @private
      */
     async _scanDirectory(dirPath, options) {
         const entries = [];
@@ -129,7 +142,11 @@ export class FileSystemObserver {
     }
 
     /**
-     * Get statistics about the observed files
+     * Computes aggregate statistics about the observed files
+     * Groups files by extension, type, size category, age, and permissions
+     * 
+     * @param {FileEntry[]} entries - Array of file entries to analyze
+     * @returns {Object} Statistics object with counts by various categories
      */
     getStatistics(entries) {
         const stats = {
@@ -189,6 +206,13 @@ export class FileSystemObserver {
         return stats;
     }
 
+    /**
+     * Logs a message using the configured logger
+     * Prefixes messages with 'Observer' component name
+     * 
+     * @param {string} level - Log level (info, warn, error, debug)
+     * @param {string} message - Message to log
+     */
     log(level, message) {
         if (this.logger) {
             this.logger.log(level, 'Observer', message);

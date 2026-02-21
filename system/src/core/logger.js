@@ -12,13 +12,26 @@ import fs from 'fs/promises';
 import path from 'path';
 
 export class SystemLogger {
+    /**
+     * Log level constants for categorizing messages
+     * Used for filtering and formatting output
+     */
     static Level = {
-        DEBUG: 'DEBUG',
-        INFO: 'INFO',
-        WARN: 'WARN',
-        ERROR: 'ERROR'
+        DEBUG: 'DEBUG',  // Detailed debugging information
+        INFO: 'INFO',    // General operational information
+        WARN: 'WARN',    // Warning conditions
+        ERROR: 'ERROR'   // Error conditions
     };
 
+    /**
+     * Creates a new SystemLogger instance
+     * Configures output behavior and initializes entry storage
+     * 
+     * @param {Object} options - Logger configuration
+     * @param {string} options.logFile - Path to save logs (optional)
+     * @param {boolean} options.verbose - Show DEBUG level messages (default: false)
+     * @param {boolean} options.silent - Suppress all console output (default: false)
+     */
     constructor(options = {}) {
         this.logFile = options.logFile || null;
         this.verbose = options.verbose || false;
@@ -67,6 +80,15 @@ export class SystemLogger {
         }
     }
 
+    /**
+     * Formats the log prefix with level and component
+     * Applies ANSI color codes when running in TTY mode
+     * 
+     * @param {string} level - Log level (DEBUG, INFO, WARN, ERROR)
+     * @param {string} component - Component name (Observer, RuleEngine, etc.)
+     * @returns {string} Formatted prefix string
+     * @private
+     */
     _formatPrefix(level, component) {
         const colors = {
             DEBUG: '\x1b[90m',   // Gray
@@ -85,25 +107,44 @@ export class SystemLogger {
         return `[${levelPad}] [${componentPad}]`;
     }
 
-    // Convenience methods
+    // ==========================================
+    // Convenience methods for each log level
+    // ==========================================
+
+    /**
+     * Logs a DEBUG level message (only shown in verbose mode)
+     */
     debug(component, message, data = null) {
         this.log(SystemLogger.Level.DEBUG, component, message, data);
     }
 
+    /**
+     * Logs an INFO level message for general operational information
+     */
     info(component, message, data = null) {
         this.log(SystemLogger.Level.INFO, component, message, data);
     }
 
+    /**
+     * Logs a WARN level message for potential issues
+     */
     warn(component, message, data = null) {
         this.log(SystemLogger.Level.WARN, component, message, data);
     }
 
+    /**
+     * Logs an ERROR level message for failure conditions
+     */
     error(component, message, data = null) {
         this.log(SystemLogger.Level.ERROR, component, message, data);
     }
 
     /**
-     * Log an operation result
+     * Logs a file operation result with appropriate level
+     * SUCCESS → INFO, SKIPPED → DEBUG, others → WARN
+     * Includes source/target paths and rule information
+     * 
+     * @param {OperationResult} result - Operation result to log
      */
     logOperation(result) {
         const level = result.status === 'SUCCESS'
@@ -121,7 +162,12 @@ export class SystemLogger {
     }
 
     /**
-     * Save logs to file
+     * Persists all log entries to a JSON file
+     * Creates parent directories if they don't exist
+     * Includes session metadata (start/end time, entry count)
+     * 
+     * @param {string} filePath - Path to save logs (uses this.logFile if null)
+     * @returns {Promise<void>}
      */
     async saveToFile(filePath = null) {
         const targetPath = filePath || this.logFile;
@@ -146,7 +192,10 @@ export class SystemLogger {
     }
 
     /**
-     * Get summary of logged events
+     * Generates a summary of all logged events
+     * Groups entries by log level and component name
+     * 
+     * @returns {Object} Summary with total count and breakdowns by level/component
      */
     getSummary() {
         const summary = {
@@ -164,7 +213,10 @@ export class SystemLogger {
     }
 
     /**
-     * Get all entries as JSON
+     * Exports all log data as JSON for API responses
+     * Includes timing, summary statistics, and all entries
+     * 
+     * @returns {Object} Complete log data in JSON format
      */
     toJSON() {
         return {
@@ -176,21 +228,30 @@ export class SystemLogger {
     }
 
     /**
-     * Filter entries by level
+     * Filters log entries by level
+     * 
+     * @param {string} level - Log level to filter by (DEBUG, INFO, WARN, ERROR)
+     * @returns {Object[]} Array of entries matching the specified level
      */
     getByLevel(level) {
         return this.entries.filter(e => e.level === level);
     }
 
     /**
-     * Get error entries
+     * Returns all ERROR level entries
+     * Useful for quickly checking if any errors occurred
+     * 
+     * @returns {Object[]} Array of error entries
      */
     getErrors() {
         return this.getByLevel(SystemLogger.Level.ERROR);
     }
 
     /**
-     * Get warning entries
+     * Returns all WARN level entries
+     * Useful for reviewing potential issues
+     * 
+     * @returns {Object[]} Array of warning entries
      */
     getWarnings() {
         return this.getByLevel(SystemLogger.Level.WARN);

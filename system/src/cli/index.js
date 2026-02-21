@@ -41,8 +41,16 @@ program.parse();
 
 const options = program.opts();
 
+/**
+ * Main CLI entry point
+ * Parses command line arguments, initializes the organizer,
+ * and executes the appropriate action (analyze, organize, or rollback)
+ * Handles error conditions and outputs summary when complete
+ * 
+ * @returns {Promise<void>}
+ */
 async function main() {
-    // Initialize logger
+    // Initialize logger with CLI options
     const logger = new SystemLogger({
         verbose: options.verbose,
         silent: options.silent,
@@ -135,6 +143,12 @@ async function main() {
     }
 }
 
+/**
+ * Converts bytes to human-readable string with appropriate unit
+ * 
+ * @param {number} bytes - Size in bytes
+ * @returns {string} Formatted string like "1.5 MB" or "256 KB"
+ */
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
     const k = 1024;

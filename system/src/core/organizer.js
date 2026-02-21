@@ -23,6 +23,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export class FileOrganizer {
+    /**
+     * Creates a new FileOrganizer instance
+     * Initializes all core modules: observer, metadata extractor, rule engine, and safety manager
+     * 
+     * @param {Object} options - Configuration options
+     * @param {Object} options.logger - Logger instance for structured logging
+     * @param {boolean} options.dryRun - If true, simulates operations without making changes
+     * @param {boolean} options.parallel - If true, executes operations in parallel using worker threads
+     * @param {string} options.configPath - Path to custom rules configuration file
+     */
     constructor(options = {}) {
         this.logger = options.logger || null;
         this.dryRun = options.dryRun || false;
@@ -133,7 +143,14 @@ export class FileOrganizer {
     }
 
     /**
-     * Create organization plan without executing
+     * Creates an organization plan by evaluating each file against rules
+     * Determines source/target paths and actions (move or skip) for each file
+     * Does NOT execute any file operations - only creates the execution plan
+     * 
+     * @param {FileEntry[]} entries - Array of file entries to process
+     * @param {string} baseDir - Base directory for relative path calculations
+     * @returns {Object[]} Array of operation objects with action, paths, and rules
+     * @private
      */
     _createOrganizationPlan(entries, baseDir) {
         const plan = [];
@@ -188,7 +205,13 @@ export class FileOrganizer {
     }
 
     /**
-     * Execute operations sequentially
+     * Executes file operations one at a time in sequence
+     * Lower throughput but safer - prevents race conditions and reduces I/O contention
+     * Each operation completes before the next begins
+     * 
+     * @param {Object[]} plan - Array of operation objects to execute
+     * @returns {Promise<void>}
+     * @private
      */
     async _executeSequential(plan) {
         for (const operation of plan) {
@@ -201,8 +224,14 @@ export class FileOrganizer {
     }
 
     /**
-     * Execute operations in parallel using worker threads
-     * Groups operations by category to reduce contention
+     * Executes file operations in parallel for improved throughput
+     * Groups operations by target category to reduce filesystem contention
+     * Each category group runs concurrently using Promise.all
+     * Trades off safety for speed - use when organizing large directories
+     * 
+     * @param {Object[]} plan - Array of operation objects to execute
+     * @returns {Promise<void>}
+     * @private
      */
     async _executeParallel(plan) {
         const groups = this._groupByCategory(plan);
@@ -237,7 +266,14 @@ export class FileOrganizer {
     }
 
     /**
-     * Execute a single operation
+     * Executes a single file move operation with safety checks
+     * Performs atomic rename (inode reference change) within the same filesystem
+     * Handles dry-run mode, safety validation, directory creation, and error cases
+     * Records operations for potential rollback
+     * 
+     * @param {Object} operation - Operation object containing file, paths, and action
+     * @returns {Promise<OperationResult>} Result with status, paths, and any errors
+     * @private
      */
     async _executeOperation(operation) {
         const { entry, rule, sourcePath, targetPath, targetDir, action, reason } = operation;
@@ -330,7 +366,12 @@ export class FileOrganizer {
     }
 
     /**
-     * Group operations by target category
+     * Groups operations by their target category for batch processing
+     * Enables parallel execution of category groups with reduced contention
+     * 
+     * @param {Object[]} plan - Array of operation objects
+     * @returns {Object} Object with category names as keys and operation arrays as values
+     * @private
      */
     _groupByCategory(plan) {
         const groups = {};
@@ -345,7 +386,11 @@ export class FileOrganizer {
     }
 
     /**
-     * Format bytes to human-readable string
+     * Converts bytes to human-readable string (KB, MB, GB, etc.)
+     * 
+     * @param {number} bytes - Size in bytes
+     * @returns {string} Formatted string like "1.5 MB"
+     * @private
      */
     _formatBytes(bytes) {
         if (bytes === 0) return '0 B';
@@ -355,6 +400,13 @@ export class FileOrganizer {
         return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
     }
 
+    /**
+     * Logs a message using the configured logger
+     * Prefixes messages with 'Organizer' component name
+     * 
+     * @param {string} level - Log level (info, warn, error, debug)
+     * @param {string} message - Message to log
+     */
     log(level, message) {
         if (this.logger) {
             this.logger.log(level, 'Organizer', message);
@@ -362,7 +414,11 @@ export class FileOrganizer {
     }
 
     /**
-     * Rollback last organization
+     * Reverts the last organization operation
+     * Restores files to their original locations using the transaction log
+     * Removes any directories created during organization
+     * 
+     * @returns {Promise<Object>} Rollback result with success status and details
      */
     async rollback() {
         return await this.safety.rollback();
