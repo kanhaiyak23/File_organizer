@@ -92,6 +92,9 @@ export default function App() {
   const [detailsPanel, setDetailsPanel] = useState(null)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [selectedItem, setSelectedItem] = useState(null)
+  const [conflictModal, setConflictModal] = useState(null) // {files: File[], conflicts: [], resolutions: {}}
+  const [pendingUploadFiles, setPendingUploadFiles] = useState(null)
+  const [conflictRenameInputs, setConflictRenameInputs] = useState({})
 
   const { toasts, addToast } = useToast()
   const fileInputRef = useRef(null)
@@ -156,19 +159,94 @@ export default function App() {
     finally { setOrganizing(false) }
   }, [currentPath, fetchContents, fetchTree, addToast])
 
-  // ── Upload files ─────────────────────────────────────────────────
+  // ── Upload files (with conflict detection) ───────────────────────
   const uploadFiles = useCallback(async (fileList) => {
     if (!currentPath || !fileList?.length) return
+    const files = Array.from(fileList)
+    const fileNames = files.map(f => f.name)
+
+    // Step 1: Check for duplicates
+    try {
+      const checkRes = await fetch(`${API}/check-duplicates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: currentPath, fileNames }),
+      })
+      const checkData = await checkRes.json()
+
+      if (checkData.conflicts && checkData.conflicts.length > 0) {
+        // Show conflict modal
+        const resolutions = {}
+        checkData.conflicts.forEach(c => { resolutions[c.fileName] = 'replace' }) // default action
+        setConflictModal({ conflicts: checkData.conflicts, resolutions })
+        setPendingUploadFiles(files)
+        setConflictRenameInputs({})
+        return
+      }
+    } catch { /* proceed with upload if check fails */ }
+
+    // No conflicts — upload directly
+    await doUpload(files, {}, [], currentPath)
+  }, [currentPath])
+
+  // Perform the actual upload with conflict resolution
+  const doUpload = useCallback(async (files, renameMap, skipList, targetPath) => {
     const fd = new FormData()
-    fd.append('path', currentPath)
-    Array.from(fileList).forEach(f => fd.append('files', f))
+    fd.append('path', targetPath)
+    files.forEach(f => fd.append('files', f))
+
+    const hasOverwrites = files.some(f => !renameMap[f.name] && !skipList.includes(f.name))
+    if (hasOverwrites && Object.keys(renameMap).length === 0 && skipList.length === 0) {
+      // No conflicts at all — normal upload
+    } else {
+      fd.append('overwrite', 'true')
+    }
+    if (Object.keys(renameMap).length > 0) fd.append('renameTo', JSON.stringify(renameMap))
+    if (skipList.length > 0) fd.append('skip', JSON.stringify(skipList))
+
     try {
       const res = await fetch(`${API}/upload`, { method: 'POST', body: fd })
       const data = await res.json()
-      if (data.success) { addToast(`Uploaded ${data.count} file(s)`, 'success'); await fetchContents(currentPath) }
-      else addToast(data.error || 'Upload failed', 'error')
+      if (data.success) {
+        const msgs = []
+        if (data.count > 0) msgs.push(`Uploaded ${data.count} file(s)`)
+        if (data.skipped?.length > 0) msgs.push(`Skipped ${data.skipped.length}`)
+        addToast(msgs.join(', ') || 'Upload complete', 'success')
+        await fetchContents(currentPath)
+      } else addToast(data.error || 'Upload failed', 'error')
     } catch { addToast('Upload failed', 'error') }
   }, [currentPath, fetchContents, addToast])
+
+  // Resolve conflicts and proceed with upload
+  const resolveConflictsAndUpload = useCallback(async () => {
+    if (!conflictModal || !pendingUploadFiles) return
+    const skipList = []
+    const renameMap = {}
+
+    for (const conflict of conflictModal.conflicts) {
+      const action = conflictModal.resolutions[conflict.fileName] || 'skip'
+      if (action === 'skip') {
+        skipList.push(conflict.fileName)
+      } else if (action === 'rename') {
+        const customName = conflictRenameInputs[conflict.fileName]
+        if (customName?.trim()) {
+          renameMap[conflict.fileName] = customName.trim()
+        } else {
+          // Auto-generate rename
+          const ext = conflict.fileName.includes('.') ? '.' + conflict.fileName.split('.').pop() : ''
+          const base = conflict.fileName.replace(/\.[^.]+$/, '')
+          renameMap[conflict.fileName] = `${base}(1)${ext}`
+        }
+      }
+      // 'replace' → no entry needed, overwrite=true handles it
+    }
+
+    setConflictModal(null)
+    setPendingUploadFiles(null)
+    setConflictRenameInputs({})
+
+    await doUpload(pendingUploadFiles, renameMap, skipList, currentPath)
+  }, [conflictModal, pendingUploadFiles, conflictRenameInputs, currentPath, doUpload])
 
   // ── Create folder ────────────────────────────────────────────────
   const createFolder = useCallback(async () => {
@@ -639,6 +717,74 @@ export default function App() {
             <div className="modal-actions">
               <button className="btn-cancel" onClick={() => setRenameModal(null)}>Cancel</button>
               <button className="btn-primary" onClick={renameItem} disabled={!renameValue.trim()}>Rename</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── CONFLICT RESOLUTION MODAL ──────────────────────────────── */}
+      {conflictModal && (
+        <div className="modal-overlay" onClick={() => { setConflictModal(null); setPendingUploadFiles(null) }}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 520, maxWidth: '95vw' }}>
+            <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <AlertCircle size={18} color="#ff8c00" />
+              File Already Exists
+            </h3>
+            <div style={{ maxHeight: 340, overflowY: 'auto', margin: '8px 0' }}>
+              {conflictModal.conflicts.map(conflict => {
+                const action = conflictModal.resolutions[conflict.fileName] || 'replace'
+                return (
+                  <div key={conflict.fileName} style={{
+                    padding: '12px', marginBottom: 8, border: '1px solid #e0e0e0',
+                    borderRadius: 4, background: '#fafafa'
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{conflict.fileName}</div>
+                    <div style={{ fontSize: 11, color: '#666', marginBottom: 8 }}>
+                      Existing: {formatBytes(conflict.existingSize)} · Modified: {formatDate(conflict.existingModified)}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {['replace', 'rename', 'skip'].map(opt => (
+                        <button key={opt} onClick={() => {
+                          setConflictModal(prev => ({
+                            ...prev,
+                            resolutions: { ...prev.resolutions, [conflict.fileName]: opt }
+                          }))
+                        }}
+                          style={{
+                            padding: '4px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+                            cursor: 'pointer', border: '1px solid',
+                            background: action === opt
+                              ? (opt === 'replace' ? '#0078d4' : opt === 'rename' ? '#107c10' : '#767676')
+                              : '#fff',
+                            color: action === opt ? '#fff' : '#333',
+                            borderColor: action === opt
+                              ? (opt === 'replace' ? '#0078d4' : opt === 'rename' ? '#107c10' : '#767676')
+                              : '#ccc',
+                          }}>
+                          {opt === 'replace' ? 'Replace' : opt === 'rename' ? 'Rename' : 'Skip'}
+                        </button>
+                      ))}
+                    </div>
+                    {action === 'rename' && (
+                      <input
+                        type="text"
+                        value={conflictRenameInputs[conflict.fileName] || (() => {
+                          const ext = conflict.fileName.includes('.') ? '.' + conflict.fileName.split('.').pop() : ''
+                          const base = conflict.fileName.replace(/\.[^.]+$/, '')
+                          return `${base}(1)${ext}`
+                        })()}
+                        onChange={e => setConflictRenameInputs(prev => ({ ...prev, [conflict.fileName]: e.target.value }))}
+                        style={{ marginTop: 8, width: '100%', padding: '6px 8px', border: '1px solid #ccc', borderRadius: 4, fontSize: 12 }}
+                        placeholder="Enter new file name"
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <div className="modal-actions">
+              <button className="btn-cancel" onClick={() => { setConflictModal(null); setPendingUploadFiles(null) }}>Cancel All</button>
+              <button className="btn-primary" onClick={resolveConflictsAndUpload}>Proceed</button>
             </div>
           </div>
         </div>

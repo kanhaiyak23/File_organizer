@@ -331,49 +331,119 @@ app.post('/api/mkdir', async (req, res) => {
   }
 })
 
+// ── POST /api/check-duplicates ──────────────────────────────────────
+// Check which files already exist in a target directory before uploading.
+app.post('/api/check-duplicates', async (req, res) => {
+  try {
+    const { path: virtualPath, fileNames } = req.body
+    if (!virtualPath || !Array.isArray(fileNames)) {
+      return res.status(400).json({ error: 'path and fileNames[] are required' })
+    }
+    const realPath = resolveVirtualPath(virtualPath)
+    if (!realPath) return res.status(400).json({ error: 'Invalid path' })
+
+    const conflicts = []
+    for (const name of fileNames) {
+      const filePath = path.join(realPath, name)
+      try {
+        const stat = await fs.stat(filePath)
+        if (stat.isFile()) {
+          conflicts.push({
+            fileName: name,
+            existingSize: stat.size,
+            existingModified: stat.mtime.toISOString(),
+          })
+        }
+      } catch {
+        // File doesn't exist — no conflict
+      }
+    }
+
+    res.json({ conflicts })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ── POST /api/upload ────────────────────────────────────────────────
-// Upload files to a specific virtual path
+// Upload files with conflict resolution support.
+// Fields: path, overwrite ("true"), renameTo (JSON {"old":"new"}), skip (JSON ["name"])
+const TEMP_DIR = path.join(__dirname, '.tmp_uploads')
 const uploadStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const virtualPath = req.body?.path
-    if (!virtualPath) return cb(new Error('path is required'))
-    const realPath = resolveVirtualPath(virtualPath)
-    if (!realPath) return cb(new Error('Invalid path'))
-    fs.mkdir(realPath, { recursive: true })
-      .then(() => cb(null, realPath))
+    fs.mkdir(TEMP_DIR, { recursive: true })
+      .then(() => cb(null, TEMP_DIR))
       .catch(cb)
   },
   filename: (req, file, cb) => {
-    // Use original name; handle conflicts after via rename
-    cb(null, file.originalname)
+    const uniqueSuffix = Date.now() + '_' + Math.round(Math.random() * 1e6)
+    cb(null, `${uniqueSuffix}_${file.originalname}`)
   },
 })
 
 const upload = multer({
   storage: uploadStorage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  limits: { fileSize: 100 * 1024 * 1024 },
 })
 
 app.post('/api/upload', upload.array('files', 50), async (req, res) => {
   try {
     const virtualPath = req.body?.path
+    if (!virtualPath) return res.status(400).json({ error: 'path is required' })
     const realPath = resolveVirtualPath(virtualPath)
+    if (!realPath) return res.status(400).json({ error: 'Invalid path' })
 
-    // Handle file conflicts — rename if needed
+    await fs.mkdir(realPath, { recursive: true })
+
+    const overwrite = req.body?.overwrite === 'true'
+    let renameMap = {}
+    if (req.body?.renameTo) {
+      try { renameMap = JSON.parse(req.body.renameTo) } catch { }
+    }
+    let skipList = []
+    if (req.body?.skip) {
+      try { skipList = JSON.parse(req.body.skip) } catch { }
+    }
+
     const uploaded = []
+    const skipped = []
+
     for (const file of (req.files || [])) {
-      const currentPath = path.join(realPath, file.originalname)
-      // If multer wrote it and there was already a file with the same name,
-      // we check and rename
-      const finalName = file.originalname
+      const originalName = file.originalname
+      const tempPath = file.path
+
+      if (skipList.includes(originalName)) {
+        await fs.unlink(tempPath).catch(() => { })
+        skipped.push(originalName)
+        continue
+      }
+
+      let finalName = renameMap[originalName] || originalName
+      const destPath = path.join(realPath, finalName)
+
+      if (!overwrite && !renameMap[originalName]) {
+        try {
+          await fs.access(destPath)
+          await fs.unlink(tempPath).catch(() => { })
+          skipped.push(originalName)
+          continue
+        } catch { /* no conflict */ }
+      }
+
+      await fs.rename(tempPath, destPath).catch(async () => {
+        await fs.copyFile(tempPath, destPath)
+        await fs.unlink(tempPath).catch(() => { })
+      })
+
+      const stat = await fs.stat(destPath)
       uploaded.push({
         name: finalName,
-        size: file.size,
+        size: stat.size,
         path: `${virtualPath}/${finalName}`,
       })
     }
 
-    res.json({ success: true, files: uploaded, count: uploaded.length })
+    res.json({ success: true, files: uploaded, count: uploaded.length, skipped })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
