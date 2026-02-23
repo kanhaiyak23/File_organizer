@@ -252,6 +252,18 @@ app.post('/api/organize', async (req, res) => {
       })
     }
 
+    // Check if all files are the same category — if so, skip organizing
+    const categories = new Set(filesToOrganize.map(e => getCategory(e.name)))
+    if (categories.size === 1) {
+      const singleCategory = [...categories][0]
+      return res.json({
+        success: true,
+        message: `All files are already ${singleCategory} — no reorganization needed`,
+        moved: 0,
+        details: [],
+      })
+    }
+
     const details = []
     let movedCount = 0
 
