@@ -19,6 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // ── Virtual Disk Roots ──────────────────────────────────────────────
 // Each virtual disk maps to a real directory on the filesystem.
 const DATA_ROOT = path.join(__dirname, 'data')
+const UNDO_LOG_PATH = path.join(__dirname, '.undo_log.json')
 const VIRTUAL_DISKS = {
   'C:': path.join(DATA_ROOT, 'C'),
   'D:': path.join(DATA_ROOT, 'D'),
@@ -252,19 +253,24 @@ app.post('/api/organize', async (req, res) => {
       })
     }
 
-    // Check if all files are the same category — if so, skip organizing
-    const categories = new Set(filesToOrganize.map(e => getCategory(e.name)))
-    if (categories.size === 1) {
-      const singleCategory = [...categories][0]
-      return res.json({
-        success: true,
-        message: `All files are already ${singleCategory} — no reorganization needed`,
-        moved: 0,
-        details: [],
-      })
+    // Only skip organizing if the current folder IS a category folder
+    // (e.g., user is inside "Images" and all files are images — no nested Images)
+    const folderName = path.basename(realPath)
+    const isCategoryFolder = CATEGORY_FOLDERS.includes(folderName)
+    if (isCategoryFolder) {
+      const categories = new Set(filesToOrganize.map(e => getCategory(e.name)))
+      if (categories.size === 1 && [...categories][0] === folderName) {
+        return res.json({
+          success: true,
+          message: `Already inside ${folderName} folder — no reorganization needed`,
+          moved: 0,
+          details: [],
+        })
+      }
     }
 
     const details = []
+    const moves = []
     let movedCount = 0
 
     for (const entry of filesToOrganize) {
@@ -281,6 +287,7 @@ app.post('/api/organize', async (req, res) => {
 
       await fs.rename(srcPath, destPath)
       movedCount++
+      moves.push({ from: srcPath, to: destPath, originalName: entry.name, category })
       details.push({
         file: entry.name,
         movedTo: `${category}/${destFilename}`,
@@ -288,12 +295,94 @@ app.post('/api/organize', async (req, res) => {
       })
     }
 
+    // Write undo log so the user can reverse this action
+    const actionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+    const undoLog = {
+      actionId,
+      timestamp: new Date().toISOString(),
+      virtualPath,
+      moves,
+    }
+    await fs.writeFile(UNDO_LOG_PATH, JSON.stringify(undoLog, null, 2))
+
     res.json({
       success: true,
       message: `Organized ${movedCount} file(s) into subfolders`,
       moved: movedCount,
+      actionId,
       details,
     })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── GET /api/undo-status ────────────────────────────────────────────
+// Check if an undo action is available
+app.get('/api/undo-status', async (req, res) => {
+  try {
+    const data = await fs.readFile(UNDO_LOG_PATH, 'utf-8')
+    const log = JSON.parse(data)
+    res.json({
+      available: true,
+      actionId: log.actionId,
+      timestamp: log.timestamp,
+      virtualPath: log.virtualPath,
+      fileCount: log.moves.length,
+    })
+  } catch {
+    res.json({ available: false })
+  }
+})
+
+// ── POST /api/undo ──────────────────────────────────────────────────
+// Undo the most recent organization action
+app.post('/api/undo', async (req, res) => {
+  try {
+    const { actionId } = req.body
+    if (!actionId) return res.status(400).json({ error: 'actionId is required' })
+
+    let log
+    try {
+      const data = await fs.readFile(UNDO_LOG_PATH, 'utf-8')
+      log = JSON.parse(data)
+    } catch {
+      return res.status(404).json({ error: 'No undo action available' })
+    }
+
+    if (log.actionId !== actionId) {
+      return res.status(400).json({ error: 'Action ID mismatch — this is not the most recent action' })
+    }
+
+    // Move files back to their original locations
+    let restored = 0
+    const foldersToCheck = new Set()
+
+    for (const move of log.moves) {
+      try {
+        await fs.rename(move.to, move.from)
+        restored++
+        // Track the category folder that might now be empty
+        foldersToCheck.add(path.dirname(move.to))
+      } catch (err) {
+        // File may have been manually moved/deleted — skip it
+      }
+    }
+
+    // Clean up empty category folders
+    for (const folder of foldersToCheck) {
+      try {
+        const remaining = await fs.readdir(folder)
+        if (remaining.length === 0) {
+          await fs.rmdir(folder)
+        }
+      } catch { /* folder may not exist */ }
+    }
+
+    // Delete the undo log
+    await fs.unlink(UNDO_LOG_PATH).catch(() => { })
+
+    res.json({ success: true, restored })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

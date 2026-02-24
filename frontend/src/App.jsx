@@ -29,6 +29,7 @@ import {
   FileType,
   Calendar,
   HardDriveIcon,
+  RotateCcw,
 } from 'lucide-react'
 
 const API = '/api'
@@ -39,8 +40,8 @@ function getCategoryIcon(cat) {
   return map[cat] || File
 }
 function getCategoryColor(cat) {
-  const map = { folder: '#dcb438', document: '#2b579a', image: '#3a853a', video: '#7f3f98', audio: '#c23b6a' }
-  return map[cat] || '#767676'
+  const map = { folder: '#f0b429', document: '#4e9af5', image: '#2dd4bf', video: '#a78bfa', audio: '#f472b6' }
+  return map[cat] || '#64748b'
 }
 function formatBytes(bytes) {
   if (!bytes) return '—'
@@ -95,6 +96,8 @@ export default function App() {
   const [conflictModal, setConflictModal] = useState(null) // {files: File[], conflicts: [], resolutions: {}}
   const [pendingUploadFiles, setPendingUploadFiles] = useState(null)
   const [conflictRenameInputs, setConflictRenameInputs] = useState({})
+  const [undoStatus, setUndoStatus] = useState(null)
+  const [undoConfirm, setUndoConfirm] = useState(false)
 
   const { toasts, addToast } = useToast()
   const fileInputRef = useRef(null)
@@ -139,6 +142,17 @@ export default function App() {
     setSelectedItem(null); setDetailsPanel(null)
   }, [])
 
+  // ── Undo status ─────────────────────────────────────────────────
+  const fetchUndoStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/undo-status`)
+      const data = await res.json()
+      setUndoStatus(data.available ? data : null)
+    } catch { setUndoStatus(null) }
+  }, [])
+
+  useEffect(() => { fetchUndoStatus() }, [fetchUndoStatus])
+
   // ── Organize folder ──────────────────────────────────────────────
   const organizeFolder = useCallback(async (targetPath) => {
     const p = targetPath || currentPath
@@ -154,10 +168,30 @@ export default function App() {
         addToast(`✅ ${data.message}`, 'success')
         await fetchContents(currentPath)
         fetchTree(currentPath.split('/')[0])
+        fetchUndoStatus()
       } else addToast(data.error || 'Organization failed', 'error')
     } catch { addToast('Organization failed', 'error') }
     finally { setOrganizing(false) }
-  }, [currentPath, fetchContents, fetchTree, addToast])
+  }, [currentPath, fetchContents, fetchTree, addToast, fetchUndoStatus])
+
+  // ── Undo last organization ──────────────────────────────────────
+  const performUndo = useCallback(async () => {
+    if (!undoStatus?.actionId) return
+    setUndoConfirm(false)
+    try {
+      const res = await fetch(`${API}/undo`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actionId: undoStatus.actionId }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        addToast(`↩️ Restored ${data.restored} file(s) to original location`, 'success')
+        setUndoStatus(null)
+        await fetchContents(currentPath)
+        fetchTree(currentPath.split('/')[0])
+      } else addToast(data.error || 'Undo failed', 'error')
+    } catch { addToast('Undo failed', 'error') }
+  }, [undoStatus, currentPath, fetchContents, fetchTree, addToast])
 
   // ── Upload files (with conflict detection) ───────────────────────
   const uploadFiles = useCallback(async (fileList) => {
@@ -367,18 +401,18 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <FolderInput size={14} color="#0078d4" />
-            File Explorer
+            <FolderInput size={14} color="#38bdf8" />
+            FILE EXPLORER
           </div>
         </div>
         <div className="sidebar-section">
           <div className="sidebar-section-title">Quick Access</div>
           <div className={`tree-item ${currentPath === 'C:' ? 'active' : ''}`} style={{ paddingLeft: 16 }} onClick={() => navigateTo('C:')}>
-            <Star size={14} color="#dcb438" />
+            <Star size={14} color="#f0b429" />
             <span className="tree-label">Desktop</span>
           </div>
           <div className={`tree-item ${currentPath === 'C:/MyFiles' ? 'active' : ''}`} style={{ paddingLeft: 16 }} onClick={() => navigateTo('C:/MyFiles')}>
-            <FolderClosed size={14} color="#dcb438" />
+            <FolderClosed size={14} color="#f0b429" />
             <span className="tree-label">My Files</span>
           </div>
         </div>
@@ -402,6 +436,10 @@ export default function App() {
             {organizing ? <Loader2 size={14} style={{ animation: 'spin 0.7s linear infinite' }} /> : <FolderInput size={14} />}
             {organizing ? 'Organizing...' : 'Organize This Folder'}
           </button>
+          <button className="toolbar-btn" onClick={() => setUndoConfirm(true)} disabled={!undoStatus}
+            title={undoStatus ? `Undo: ${undoStatus.fileCount} file(s) in ${undoStatus.virtualPath}` : 'No undo available'}>
+            <RotateCcw size={14} /> Undo
+          </button>
           <button className="toolbar-btn" onClick={() => { setNewFolderModal(true); setNewFolderName('') }} disabled={!currentPath}>
             <FolderPlus size={14} /> New Folder
           </button>
@@ -420,7 +458,7 @@ export default function App() {
             </button>
           </div>
           <div className="toolbar-search">
-            <Search size={14} color="#666" />
+            <Search size={14} color="#5a6a7a" />
             <input type="text" placeholder="Search files..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
           </div>
         </div>
@@ -450,7 +488,7 @@ export default function App() {
           >
             {isDragging && (
               <div className="drop-zone-active">
-                <div style={{ textAlign: 'center', color: '#0078d4' }}>
+                <div style={{ textAlign: 'center', color: '#38bdf8' }}>
                   <Upload size={36} style={{ marginBottom: 8 }} />
                   <div style={{ fontSize: 14, fontWeight: 500 }}>Drop files to upload</div>
                 </div>
@@ -459,7 +497,7 @@ export default function App() {
             {loading && (
               <div className="loading-overlay">
                 <div className="spinner" style={{ width: 28, height: 28 }} />
-                <span style={{ fontSize: 13, color: '#666' }}>Loading...</span>
+                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading...</span>
               </div>
             )}
             {!loading && sorted.length === 0 && (
@@ -501,18 +539,14 @@ export default function App() {
 
           {/* ── DETAILS PANEL ────────────────────────────────────── */}
           {detailsPanel && (
-            <div style={{
-              width: 280, minWidth: 280, borderLeft: '1px solid #e0e0e0', background: '#fff',
-              display: 'flex', flexDirection: 'column', overflow: 'hidden'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #e0e0e0' }}>
-                <span style={{ fontWeight: 600, fontSize: 13 }}>Details</span>
-                <button onClick={() => { setDetailsPanel(null); setSelectedItem(null) }}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', color: '#666' }}>
+            <div className="details-panel">
+              <div className="details-panel-header">
+                <span>Details</span>
+                <button className="details-panel-close" onClick={() => { setDetailsPanel(null); setSelectedItem(null) }}>
                   <X size={16} />
                 </button>
               </div>
-              <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+              <div className="details-panel-body">
                 {/* Icon */}
                 <div style={{ textAlign: 'center', padding: '16px 0 12px' }}>
                   {(() => {
@@ -526,12 +560,12 @@ export default function App() {
                 </div>
                 {/* Metadata */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <DetailRow icon={<FileType size={14} color="#666" />} label="Type" value={detailsPanel.isDirectory ? 'File folder' : (detailsPanel.extension?.toUpperCase() + ' file' || 'File')} />
-                  {!detailsPanel.isDirectory && <DetailRow icon={<HardDriveIcon size={14} color="#666" />} label="Size" value={formatBytes(detailsPanel.size)} />}
-                  <DetailRow icon={<Calendar size={14} color="#666" />} label="Modified" value={formatDate(detailsPanel.modified)} />
-                  <DetailRow icon={<FolderOpen size={14} color="#666" />} label="Location" value={detailsPanel.path} />
+                  <DetailRow icon={<FileType size={14} color="var(--text-muted)" />} label="Type" value={detailsPanel.isDirectory ? 'File folder' : (detailsPanel.extension?.toUpperCase() + ' file' || 'File')} />
+                  {!detailsPanel.isDirectory && <DetailRow icon={<HardDriveIcon size={14} color="var(--text-muted)" />} label="Size" value={formatBytes(detailsPanel.size)} />}
+                  <DetailRow icon={<Calendar size={14} color="var(--text-muted)" />} label="Modified" value={formatDate(detailsPanel.modified)} />
+                  <DetailRow icon={<FolderOpen size={14} color="var(--text-muted)" />} label="Location" value={detailsPanel.path} />
                   {detailsPanel.isDirectory && detailsPanel.childCount !== undefined && (
-                    <DetailRow icon={<File size={14} color="#666" />} label="Items" value={`${detailsPanel.childCount} items`} />
+                    <DetailRow icon={<File size={14} color="var(--text-muted)" />} label="Items" value={`${detailsPanel.childCount} items`} />
                   )}
                 </div>
                 {/* Action buttons */}
@@ -637,21 +671,21 @@ export default function App() {
                       <Download size={13} /> Download
                     </button>
                     <button onClick={() => setPreviewData(null)}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', color: '#666' }}>
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', color: 'var(--text-muted)' }}>
                       <X size={18} />
                     </button>
                   </div>
                 </div>
                 {/* Meta info bar */}
-                <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#666', marginBottom: 12, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, flexWrap: 'wrap' }}>
                   <span>{previewData.extension?.toUpperCase()} file</span>
                   <span>{formatBytes(previewData.size)}</span>
                   <span>Modified: {formatDate(previewData.modified)}</span>
                 </div>
                 {/* Preview content */}
-                <div style={{ flex: 1, overflow: 'auto', borderRadius: 4, border: '1px solid #e0e0e0', background: '#fafafa' }}>
+                <div className="preview-content">
                   {previewData.previewType === 'text' && (
-                    <pre style={{ padding: 16, margin: 0, fontSize: 13, fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace", whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
+                    <pre className="preview-text">
                       {previewData.content}
                     </pre>
                   )}
@@ -668,7 +702,7 @@ export default function App() {
                   )}
                   {previewData.previewType === 'audio' && (
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 40, gap: 16 }}>
-                      <Music size={48} color="#c23b6a" strokeWidth={1.3} />
+                      <Music size={48} color="#f472b6" strokeWidth={1.3} />
                       <audio controls src={previewData.previewUrl} style={{ width: '100%' }} />
                     </div>
                   )}
@@ -677,7 +711,7 @@ export default function App() {
                       style={{ width: '100%', height: '60vh', border: 'none' }} />
                   )}
                   {previewData.previewType === 'none' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 60, color: '#999' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 60, color: 'var(--text-muted)' }}>
                       <File size={48} strokeWidth={1.3} />
                       <p style={{ marginTop: 12, fontSize: 14 }}>Preview not available for this file type</p>
                       <button className="toolbar-btn" style={{ marginTop: 12 }} onClick={() => downloadFile(previewData)}>
@@ -727,7 +761,7 @@ export default function App() {
         <div className="modal-overlay" onClick={() => { setConflictModal(null); setPendingUploadFiles(null) }}>
           <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 520, maxWidth: '95vw' }}>
             <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <AlertCircle size={18} color="#ff8c00" />
+              <AlertCircle size={18} color="#fbbf24" />
               File Already Exists
             </h3>
             <div style={{ maxHeight: 340, overflowY: 'auto', margin: '8px 0' }}>
@@ -735,11 +769,11 @@ export default function App() {
                 const action = conflictModal.resolutions[conflict.fileName] || 'replace'
                 return (
                   <div key={conflict.fileName} style={{
-                    padding: '12px', marginBottom: 8, border: '1px solid #e0e0e0',
-                    borderRadius: 4, background: '#fafafa'
+                    padding: '12px', marginBottom: 8, border: '1px solid var(--border-light)',
+                    borderRadius: 8, background: 'var(--bg-surface)'
                   }}>
                     <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{conflict.fileName}</div>
-                    <div style={{ fontSize: 11, color: '#666', marginBottom: 8 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
                       Existing: {formatBytes(conflict.existingSize)} · Modified: {formatDate(conflict.existingModified)}
                     </div>
                     <div style={{ display: 'flex', gap: 6 }}>
@@ -754,12 +788,12 @@ export default function App() {
                             padding: '4px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500,
                             cursor: 'pointer', border: '1px solid',
                             background: action === opt
-                              ? (opt === 'replace' ? '#0078d4' : opt === 'rename' ? '#107c10' : '#767676')
-                              : '#fff',
-                            color: action === opt ? '#fff' : '#333',
+                              ? (opt === 'replace' ? '#38bdf8' : opt === 'rename' ? '#34d399' : '#64748b')
+                              : 'var(--bg-elevated)',
+                            color: action === opt ? 'var(--bg-deepest)' : 'var(--text-secondary)',
                             borderColor: action === opt
-                              ? (opt === 'replace' ? '#0078d4' : opt === 'rename' ? '#107c10' : '#767676')
-                              : '#ccc',
+                              ? (opt === 'replace' ? '#38bdf8' : opt === 'rename' ? '#34d399' : '#64748b')
+                              : 'var(--border-light)',
                           }}>
                           {opt === 'replace' ? 'Replace' : opt === 'rename' ? 'Rename' : 'Skip'}
                         </button>
@@ -795,15 +829,40 @@ export default function App() {
         <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>Confirm Delete</h3>
-            <p style={{ fontSize: 13, color: '#444', margin: '0 0 8px' }}>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '0 0 8px' }}>
               Are you sure you want to delete <strong>{deleteConfirm.name}</strong>?
               {deleteConfirm.isDirectory && ' This will delete the folder and all its contents.'}
             </p>
-            <p style={{ fontSize: 12, color: '#d13438', margin: 0 }}>This action cannot be undone.</p>
+            <p style={{ fontSize: 12, color: '#f43f5e', margin: 0 }}>This action cannot be undone.</p>
             <div className="modal-actions">
               <button className="btn-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
-              <button className="btn-primary" style={{ background: '#d13438', borderColor: '#d13438' }}
+              <button className="btn-primary" style={{ background: '#f43f5e', borderColor: '#f43f5e' }}
                 onClick={() => deleteItem(deleteConfirm.path)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── UNDO CONFIRM MODAL ──────────────────────────────────────── */}
+      {undoConfirm && undoStatus && (
+        <div className="modal-overlay" onClick={() => setUndoConfirm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <RotateCcw size={18} color="#fbbf24" />
+              Undo Last Organization
+            </h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
+              This will restore <strong>{undoStatus.fileCount} file(s)</strong> back to their original location in <strong>{undoStatus.virtualPath}</strong>.
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 4px' }}>
+              Organized on: {formatDate(undoStatus.timestamp)}
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+              Empty category folders will be removed automatically.
+            </p>
+            <div className="modal-actions">
+              <button className="btn-cancel" onClick={() => setUndoConfirm(false)}>Cancel</button>
+              <button className="btn-primary" onClick={performUndo}>Undo Organization</button>
             </div>
           </div>
         </div>
@@ -813,9 +872,9 @@ export default function App() {
       <div className="toast-container">
         {toasts.map(t => (
           <div key={t.id} className={`toast ${t.type}`}>
-            {t.type === 'success' && <Check size={16} color="#107c10" />}
-            {t.type === 'error' && <AlertCircle size={16} color="#d13438" />}
-            {t.type === 'info' && <Info size={16} color="#0078d4" />}
+            {t.type === 'success' && <Check size={16} color="#34d399" />}
+            {t.type === 'error' && <AlertCircle size={16} color="#f43f5e" />}
+            {t.type === 'info' && <Info size={16} color="#38bdf8" />}
             <span>{t.message}</span>
           </div>
         ))}
@@ -832,8 +891,8 @@ function DetailRow({ icon, label, value }) {
     <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', paddingTop: 1 }}>{icon}</div>
       <div style={{ flex: 1 }}>
-        <div style={{ color: '#999', fontSize: 11, marginBottom: 1 }}>{label}</div>
-        <div style={{ color: '#333', wordBreak: 'break-all' }}>{value}</div>
+        <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 1 }}>{label}</div>
+        <div style={{ color: 'var(--text-primary)', wordBreak: 'break-all' }}>{value}</div>
       </div>
     </div>
   )
@@ -853,7 +912,7 @@ function DiskTreeNode({ disk, currentPath, expandedFolders, setExpandedFolders, 
         <span className="tree-toggle" onClick={toggle}>
           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
-        <span className="tree-icon"><HardDrive size={14} color="#0078d4" /></span>
+        <span className="tree-icon"><HardDrive size={14} color="#38bdf8" /></span>
         <span className="tree-label" onClick={() => navigateTo(disk.label)}>{disk.label}</span>
       </div>
       {isExpanded && (
@@ -863,7 +922,7 @@ function DiskTreeNode({ disk, currentPath, expandedFolders, setExpandedFolders, 
               expandedFolders={expandedFolders} setExpandedFolders={setExpandedFolders}
               navigateTo={navigateTo} depth={1} />
           ))}
-          {tree.length === 0 && <div style={{ padding: '4px 16px', fontSize: 11, color: '#999' }}>Empty</div>}
+          {tree.length === 0 && <div style={{ padding: '4px 16px', fontSize: 11, color: 'var(--text-muted)' }}>Empty</div>}
         </div>
       )}
     </div>
@@ -887,7 +946,7 @@ function TreeFolder({ folder, currentPath, expandedFolders, setExpandedFolders, 
             : <span style={{ width: 10 }} />}
         </span>
         <span className="tree-icon">
-          {isExpanded ? <FolderOpen size={14} color="#dcb438" /> : <FolderClosed size={14} color="#dcb438" />}
+          {isExpanded ? <FolderOpen size={14} color="#f0b429" /> : <FolderClosed size={14} color="#f0b429" />}
         </span>
         <span className="tree-label" onClick={() => navigateTo(folder.path)}>{folder.name}</span>
       </div>
