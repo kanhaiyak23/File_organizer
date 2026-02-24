@@ -359,6 +359,23 @@ export default function App() {
   // ── Drag & Drop ──────────────────────────────────────────────────
   const onDrop = (e) => { e.preventDefault(); setIsDragging(false); uploadFiles(e.dataTransfer?.files) }
 
+  // ── Parallax ─────────────────────────────────────────────────────
+  const sidebarRef = useRef(null)
+  const mainRef = useRef(null)
+  const isMobile = useRef(typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches)
+
+  const onMouseMove = useCallback((e) => {
+    if (isMobile.current) return
+    const x = (e.clientX / window.innerWidth - 0.5) * 2 // -1 to 1
+    const y = (e.clientY / window.innerHeight - 0.5) * 2
+    if (sidebarRef.current) {
+      sidebarRef.current.style.transform = `translateX(${x * -2}px) translateY(${y * -1}px)`
+    }
+    if (mainRef.current) {
+      mainRef.current.style.transform = `translateX(${x * 1.5}px) translateY(${y * 0.8}px)`
+    }
+  }, [])
+
   // ── Close context menu on click ──────────────────────────────────
   useEffect(() => {
     const close = () => setContextMenu(null)
@@ -396,9 +413,9 @@ export default function App() {
   //  RENDER
   // ══════════════════════════════════════════════════════════════════
   return (
-    <div className="explorer">
+    <div className="explorer" onMouseMove={onMouseMove}>
       {/* ── SIDEBAR ──────────────────────────────────────────────── */}
-      <aside className="sidebar">
+      <aside className="sidebar" ref={sidebarRef}>
         <div className="sidebar-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <FolderInput size={14} color="#38bdf8" />
@@ -429,7 +446,7 @@ export default function App() {
       </aside>
 
       {/* ── MAIN PANEL ─────────────────────────────────────────────── */}
-      <div className="main-panel">
+      <div className="main-panel" ref={mainRef}>
         {/* Toolbar */}
         <div className="toolbar">
           <button className="toolbar-btn primary" onClick={() => organizeFolder()} disabled={!currentPath || organizing}>

@@ -148,6 +148,80 @@ app.get('/api/disks', async (req, res) => {
   }
 })
 
+// ── GET /api/stats ──────────────────────────────────────────────────
+// Returns aggregate statistics across all virtual disks for the dashboard
+app.get('/api/stats', async (req, res) => {
+  try {
+    let totalFiles = 0
+    let totalFolders = 0
+    let totalSize = 0
+    let largestFile = { name: '—', size: 0, path: '' }
+    const typeDistribution = {}
+    const diskUsage = []
+
+    // Recursive scan helper
+    async function scanDir(dirPath, virtualPrefix) {
+      let dirSize = 0
+      let entries
+      try { entries = await fs.readdir(dirPath, { withFileTypes: true }) }
+      catch { return 0 }
+
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue
+        const fullPath = path.join(dirPath, entry.name)
+        try {
+          const stat = await fs.stat(fullPath)
+          if (entry.isDirectory()) {
+            totalFolders++
+            dirSize += await scanDir(fullPath, `${virtualPrefix}/${entry.name}`)
+          } else {
+            totalFiles++
+            totalSize += stat.size
+            dirSize += stat.size
+            if (stat.size > largestFile.size) {
+              largestFile = { name: entry.name, size: stat.size, path: `${virtualPrefix}/${entry.name}` }
+            }
+            const cat = getCategory(entry.name)
+            typeDistribution[cat] = (typeDistribution[cat] || 0) + 1
+          }
+        } catch { /* skip */ }
+      }
+      return dirSize
+    }
+
+    for (const [label, root] of Object.entries(VIRTUAL_DISKS)) {
+      const used = await scanDir(root, label)
+      diskUsage.push({ label, used })
+    }
+
+    // Check for recent undo action
+    let recentAction = null
+    try {
+      const undoData = await fs.readFile(UNDO_LOG_PATH, 'utf-8')
+      const log = JSON.parse(undoData)
+      recentAction = {
+        type: 'organize',
+        timestamp: log.timestamp,
+        path: log.virtualPath,
+        fileCount: log.moves.length,
+        undoAvailable: true,
+      }
+    } catch { /* no undo log */ }
+
+    res.json({
+      totalFiles,
+      totalFolders,
+      totalSize,
+      largestFile,
+      typeDistribution,
+      diskUsage,
+      recentAction,
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ── GET /api/files?path=... ─────────────────────────────────────────
 // List directory contents. Returns files and folders with metadata.
 app.get('/api/files', async (req, res) => {
