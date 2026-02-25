@@ -31,8 +31,19 @@ import {
   HardDriveIcon,
   RotateCcw,
 } from 'lucide-react'
+import { useActivity } from './ActivityContext.jsx'
 
 const API = '/api'
+
+const TAG_COLORS = [
+  { name: 'Red', color: '#ef4444' },
+  { name: 'Orange', color: '#f97316' },
+  { name: 'Yellow', color: '#eab308' },
+  { name: 'Green', color: '#22c55e' },
+  { name: 'Blue', color: '#3b82f6' },
+  { name: 'Purple', color: '#a855f7' },
+  { name: 'Gray', color: '#9ca3af' },
+]
 
 // ── Icon helpers ─────────────────────────────────────────────────────
 function getCategoryIcon(cat) {
@@ -54,17 +65,6 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-// ── Toast System ─────────────────────────────────────────────────────
-let toastId = 0
-function useToast() {
-  const [toasts, setToasts] = useState([])
-  const addToast = useCallback((message, type = 'info') => {
-    const id = ++toastId
-    setToasts(prev => [...prev, { id, message, type }])
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500)
-  }, [])
-  return { toasts, addToast }
-}
 
 // ══════════════════════════════════════════════════════════════════════
 //  MAIN APP
@@ -72,6 +72,7 @@ function useToast() {
 export default function App() {
   const [disks, setDisks] = useState([])
   const [currentPath, setCurrentPath] = useState(null)
+  const [selectedTag, setSelectedTag] = useState(null)
   const [contents, setContents] = useState([])
   const [parentPath, setParentPath] = useState(null)
   const [viewMode, setViewMode] = useState('list')
@@ -99,7 +100,7 @@ export default function App() {
   const [undoStatus, setUndoStatus] = useState(null)
   const [undoConfirm, setUndoConfirm] = useState(false)
 
-  const { toasts, addToast } = useToast()
+  const { addActivity: addToast } = useActivity()
   const fileInputRef = useRef(null)
 
   // ── Fetch disks ──────────────────────────────────────────────────
@@ -110,20 +111,28 @@ export default function App() {
     }).catch(() => { })
   }, [])
 
-  // ── Fetch directory contents ─────────────────────────────────────
-  const fetchContents = useCallback(async (dirPath) => {
-    if (!dirPath) return
+  // ── Fetch directory or tag contents ──────────────────────────────
+  const fetchContents = useCallback(async (dirPath, tagHex = null) => {
+    if (!dirPath && !tagHex) return
     setLoading(true)
     try {
-      const res = await fetch(`${API}/files?path=${encodeURIComponent(dirPath)}`)
+      let res;
+      if (tagHex) {
+        res = await fetch(`${API}/tags/files?color=${encodeURIComponent(tagHex)}`)
+      } else {
+        res = await fetch(`${API}/files?path=${encodeURIComponent(dirPath)}`)
+      }
       const data = await res.json()
       if (data.error) { addToast(data.error, 'error'); setContents([]) }
       else { setContents(data.items || []); setParentPath(data.parentPath || null) }
-    } catch { setContents([]); addToast('Failed to load directory', 'error') }
+    } catch { setContents([]); addToast(tagHex ? 'Failed to load tagged files' : 'Failed to load directory', 'error') }
     finally { setLoading(false) }
   }, [addToast])
 
-  useEffect(() => { if (currentPath) fetchContents(currentPath) }, [currentPath, fetchContents])
+  useEffect(() => { 
+    if (selectedTag) fetchContents(null, selectedTag)
+    else if (currentPath) fetchContents(currentPath)
+  }, [selectedTag, currentPath, fetchContents])
 
   // ── Fetch tree ───────────────────────────────────────────────────
   const fetchTree = useCallback(async (diskPath) => {
@@ -138,7 +147,12 @@ export default function App() {
 
   // ── Navigate ─────────────────────────────────────────────────────
   const navigateTo = useCallback((p) => {
-    setCurrentPath(p); setSearchQuery(''); setContextMenu(null)
+    setSelectedTag(null); setCurrentPath(p); setSearchQuery(''); setContextMenu(null)
+    setSelectedItem(null); setDetailsPanel(null)
+  }, [])
+
+  const navigateToTag = useCallback((t) => {
+    setSelectedTag(t); setCurrentPath(null); setSearchQuery(''); setContextMenu(null)
     setSelectedItem(null); setDetailsPanel(null)
   }, [])
 
@@ -165,7 +179,13 @@ export default function App() {
       })
       const data = await res.json()
       if (data.success) {
-        addToast(`✅ ${data.message}`, 'success')
+        addToast(
+          data.moved > 0
+            ? `Organized ${data.moved} file(s) → ${p}`
+            : data.message,
+          data.moved > 0 ? 'success' : 'info',
+          data.moved > 0 ? `${data.details?.map(d => d.file).join(', ')}` : null
+        )
         await fetchContents(currentPath)
         fetchTree(currentPath.split('/')[0])
         fetchUndoStatus()
@@ -185,7 +205,7 @@ export default function App() {
       })
       const data = await res.json()
       if (data.success) {
-        addToast(`↩️ Restored ${data.restored} file(s) to original location`, 'success')
+        addToast(`Undo applied — ${data.restored} file(s) restored`, 'info', `Moved back to original locations`)
         setUndoStatus(null)
         await fetchContents(currentPath)
         fetchTree(currentPath.split('/')[0])
@@ -209,6 +229,12 @@ export default function App() {
       const checkData = await checkRes.json()
 
       if (checkData.conflicts && checkData.conflicts.length > 0) {
+        // Emit conflict event to activity feed
+        addToast(
+          `Conflict detected: ${checkData.conflicts.length} file(s) already exist`,
+          'conflict',
+          checkData.conflicts.map(c => c.fileName).join(', ')
+        )
         // Show conflict modal
         const resolutions = {}
         checkData.conflicts.forEach(c => { resolutions[c.fileName] = 'replace' }) // default action
@@ -243,9 +269,13 @@ export default function App() {
       const data = await res.json()
       if (data.success) {
         const msgs = []
-        if (data.count > 0) msgs.push(`Uploaded ${data.count} file(s)`)
-        if (data.skipped?.length > 0) msgs.push(`Skipped ${data.skipped.length}`)
-        addToast(msgs.join(', ') || 'Upload complete', 'success')
+        if (data.count > 0) msgs.push(`Uploaded ${data.count} file(s) to ${targetPath}`)
+        if (data.skipped?.length > 0) msgs.push(`Skipped: ${data.skipped.join(', ')}`)
+        addToast(
+          data.count > 0 ? `Uploaded ${data.count} file(s)` : 'Upload complete',
+          'success',
+          msgs.join(' · ') || null
+        )
         await fetchContents(currentPath)
       } else addToast(data.error || 'Upload failed', 'error')
     } catch { addToast('Upload failed', 'error') }
@@ -292,28 +322,55 @@ export default function App() {
       })
       const data = await res.json()
       if (data.success) {
-        addToast(`Created folder "${data.name}"`, 'success')
+        addToast(`Folder created: ${data.name}`, 'success', `Path: ${data.path}`)
         setNewFolderModal(false); setNewFolderName('')
         await fetchContents(currentPath); fetchTree(currentPath.split('/')[0])
       } else addToast(data.error || 'Failed', 'error')
     } catch { addToast('Failed to create folder', 'error') }
   }, [currentPath, newFolderName, fetchContents, fetchTree, addToast])
 
-  // ── Delete ───────────────────────────────────────────────────────
+  // ── Move to Recycle Bin (soft delete) ───────────────────────────
   const deleteItem = useCallback(async (itemPath) => {
     try {
-      const res = await fetch(`${API}/delete`, {
+      const res = await fetch(`${API}/trash`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: itemPath }),
       })
       const data = await res.json()
       if (data.success) {
-        addToast('Deleted successfully', 'success')
+        addToast(
+          `Moved to Recycle Bin: ${data.name || itemPath.split('/').pop()}`,
+          'info',
+          `From ${currentPath} · Restore via the trash icon`
+        )
         await fetchContents(currentPath); fetchTree(currentPath.split('/')[0])
         setDetailsPanel(null); setSelectedItem(null); setDeleteConfirm(null)
-      } else addToast(data.error || 'Delete failed', 'error')
-    } catch { addToast('Delete failed', 'error') }
+      } else addToast(data.error || 'Move to trash failed', 'error')
+    } catch { addToast('Move to trash failed', 'error') }
   }, [currentPath, fetchContents, fetchTree, addToast])
+
+  // ── Toggle Tag ───────────────────────────────────────────────────
+  const toggleTag = useCallback(async (item, colorHex) => {
+    const currentTags = item.tags || []
+    const newTags = currentTags.includes(colorHex)
+      ? currentTags.filter(t => t !== colorHex)
+      : [...currentTags, colorHex]
+      
+    try {
+      const res = await fetch(`${API}/tags`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: item.path, tags: newTags }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setContents(prev => prev.map(f => f.path === item.path ? { ...f, tags: data.tags } : f))
+        setContextMenu(prev => prev && prev.item.path === item.path 
+          ? { ...prev, item: { ...prev.item, tags: data.tags } } : prev)
+        setDetailsPanel(prev => prev && prev.path === item.path 
+          ? { ...prev, tags: data.tags } : prev)
+      } else addToast(data.error || 'Failed to update tags', 'error')
+    } catch { addToast('Failed to update tags', 'error') }
+  }, [addToast])
 
   // ── Rename ───────────────────────────────────────────────────────
   const renameItem = useCallback(async () => {
@@ -325,7 +382,7 @@ export default function App() {
       })
       const data = await res.json()
       if (data.success) {
-        addToast(`Renamed to "${data.name}"`, 'success')
+        addToast(`Renamed → ${data.name}`, 'success', `In ${currentPath}`)
         setRenameModal(null); setRenameValue('')
         await fetchContents(currentPath); fetchTree(currentPath.split('/')[0])
         setDetailsPanel(null)
@@ -433,6 +490,15 @@ export default function App() {
             <span className="tree-label">My Files</span>
           </div>
         </div>
+        <div className="sidebar-section">
+          <div className="sidebar-section-title">Tags</div>
+          {TAG_COLORS.map(t => (
+            <div key={t.color} className={`tree-item ${selectedTag === t.color ? 'active' : ''}`} style={{ paddingLeft: 16 }} onClick={() => navigateToTag(t.color)}>
+              <div style={{ width: 12, height: 12, borderRadius: '50%', background: t.color, marginRight: 8, boxShadow: `0 0 6px ${t.color}80`, flexShrink: 0 }} />
+              <span className="tree-label">{t.name}</span>
+            </div>
+          ))}
+        </div>
         <div className="sidebar-section" style={{ borderBottom: 'none' }}>
           <div className="sidebar-section-title">Hard Disk Drives</div>
         </div>
@@ -449,18 +515,18 @@ export default function App() {
       <div className="main-panel" ref={mainRef}>
         {/* Toolbar */}
         <div className="toolbar">
-          <button className="toolbar-btn primary" onClick={() => organizeFolder()} disabled={!currentPath || organizing}>
+          <button className="toolbar-btn primary" onClick={() => organizeFolder()} disabled={selectedTag || !currentPath || organizing}>
             {organizing ? <Loader2 size={14} style={{ animation: 'spin 0.7s linear infinite' }} /> : <FolderInput size={14} />}
             {organizing ? 'Organizing...' : 'Organize This Folder'}
           </button>
-          <button className="toolbar-btn" onClick={() => setUndoConfirm(true)} disabled={!undoStatus}
+          <button className="toolbar-btn" onClick={() => setUndoConfirm(true)} disabled={selectedTag || !undoStatus}
             title={undoStatus ? `Undo: ${undoStatus.fileCount} file(s) in ${undoStatus.virtualPath}` : 'No undo available'}>
             <RotateCcw size={14} /> Undo
           </button>
-          <button className="toolbar-btn" onClick={() => { setNewFolderModal(true); setNewFolderName('') }} disabled={!currentPath}>
+          <button className="toolbar-btn" onClick={() => { setNewFolderModal(true); setNewFolderName('') }} disabled={selectedTag || !currentPath}>
             <FolderPlus size={14} /> New Folder
           </button>
-          <button className="toolbar-btn" onClick={() => fileInputRef.current?.click()} disabled={!currentPath}>
+          <button className="toolbar-btn" onClick={() => fileInputRef.current?.click()} disabled={selectedTag || !currentPath}>
             <Upload size={14} /> Upload
           </button>
           <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }}
@@ -482,18 +548,31 @@ export default function App() {
 
         {/* Breadcrumb */}
         <div className="breadcrumb-bar">
-          {breadcrumbs.map((part, i) => {
-            const pathStr = breadcrumbs.slice(0, i + 1).join('/')
-            return (
-              <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
-                {i > 0 && <span className="breadcrumb-separator">›</span>}
-                <span className="breadcrumb-item" onClick={() => navigateTo(pathStr)}>
-                  {i === 0 && <HardDrive size={12} style={{ marginRight: 3 }} />}
-                  {part}
-                </span>
+          {selectedTag ? (
+            <span className="breadcrumb-path">
+              <span className="breadcrumb-item" onClick={() => setSelectedTag(null)}>
+                <Star size={12} style={{ marginRight: 3 }} /> Tags
               </span>
-            )
-          })}
+              <span className="breadcrumb-separator">›</span>
+              <span className="breadcrumb-item" style={{ color: selectedTag, fontWeight: 600 }}>
+                <div style={{ width: 10, height: 10, borderRadius: '50%', background: selectedTag, marginRight: 6, boxShadow: `0 0 6px ${selectedTag}80` }} />
+                {TAG_COLORS.find(c => c.color === selectedTag)?.name} Files
+              </span>
+            </span>
+          ) : (
+            breadcrumbs.map((part, i) => {
+              const pathStr = breadcrumbs.slice(0, i + 1).join('/')
+              return (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  {i > 0 && <span className="breadcrumb-separator">›</span>}
+                  <span className="breadcrumb-item" onClick={() => navigateTo(pathStr)}>
+                    {i === 0 && <HardDrive size={12} style={{ marginRight: 3 }} />}
+                    {part}
+                  </span>
+                </span>
+              )
+            })
+          )}
         </div>
 
         {/* Content + Details split */}
@@ -581,6 +660,13 @@ export default function App() {
                   {!detailsPanel.isDirectory && <DetailRow icon={<HardDriveIcon size={14} color="var(--text-muted)" />} label="Size" value={formatBytes(detailsPanel.size)} />}
                   <DetailRow icon={<Calendar size={14} color="var(--text-muted)" />} label="Modified" value={formatDate(detailsPanel.modified)} />
                   <DetailRow icon={<FolderOpen size={14} color="var(--text-muted)" />} label="Location" value={detailsPanel.path} />
+                  {detailsPanel.tags && detailsPanel.tags.length > 0 && (
+                    <DetailRow icon={<Star size={14} color="var(--text-muted)" />} label="Tags" value={
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center', height: '100%' }}>
+                        {detailsPanel.tags.map(t => <div key={t} title={TAG_COLORS.find(c => c.color === t)?.name} style={{ width: 10, height: 10, borderRadius: '50%', background: t }} />)}
+                      </div>
+                    } />
+                  )}
                   {detailsPanel.isDirectory && detailsPanel.childCount !== undefined && (
                     <DetailRow icon={<File size={14} color="var(--text-muted)" />} label="Items" value={`${detailsPanel.childCount} items`} />
                   )}
@@ -658,6 +744,29 @@ export default function App() {
             <Pencil size={14} /> Rename
           </div>
           <div className="context-menu-separator" />
+          
+          <div style={{ padding: '8px 14px', fontSize: 13, color: 'var(--text-secondary)' }}>
+            <div style={{ marginBottom: 6 }}>Tags</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {TAG_COLORS.map(t => {
+                const isActive = (contextMenu.item.tags || []).includes(t.color)
+                return (
+                  <div key={t.color}
+                    onClick={(e) => { e.stopPropagation(); toggleTag(contextMenu.item, t.color) }}
+                    style={{
+                      width: 16, height: 16, borderRadius: '50%', background: t.color, cursor: 'pointer',
+                      border: isActive ? '2px solid white' : '2px solid transparent',
+                      boxShadow: isActive ? `0 0 8px ${t.color}` : 'none',
+                      transition: 'all 0.15s'
+                    }}
+                    title={t.name}
+                  />
+                )
+              })}
+            </div>
+          </div>
+          <div className="context-menu-separator" />
+
           <div className="context-menu-item danger" onClick={() => { setDeleteConfirm(contextMenu.item); setContextMenu(null) }}>
             <Trash2 size={14} /> Delete
           </div>
@@ -885,17 +994,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ── TOASTS ─────────────────────────────────────────────────── */}
-      <div className="toast-container">
-        {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.type}`}>
-            {t.type === 'success' && <Check size={16} color="#34d399" />}
-            {t.type === 'error' && <AlertCircle size={16} color="#f43f5e" />}
-            {t.type === 'info' && <Info size={16} color="#38bdf8" />}
-            <span>{t.message}</span>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
@@ -986,11 +1084,19 @@ function TreeFolder({ folder, currentPath, expandedFolders, setExpandedFolders, 
 function GridItem({ item, selected, onClick, onDoubleClick, onContextMenu }) {
   const Icon = item.isDirectory ? FolderClosed : getCategoryIcon(item.type)
   const color = item.isDirectory ? '#dcb438' : getCategoryColor(item.type)
+  const tags = item.tags || []
 
   return (
     <div className={`file-grid-item ${selected ? 'selected' : ''}`}
       onClick={onClick} onDoubleClick={onDoubleClick} onContextMenu={onContextMenu}>
-      <div className="file-icon"><Icon size={42} color={color} strokeWidth={1.5} /></div>
+      <div className="file-icon" style={{ position: 'relative' }}>
+        <Icon size={42} color={color} strokeWidth={1.5} />
+        {tags.length > 0 && (
+          <div style={{ position: 'absolute', top: -4, right: -4, display: 'flex', gap: 2, background: 'rgba(0,0,0,0.4)', padding: '2px 4px', borderRadius: 8, backdropFilter: 'blur(4px)' }}>
+            {tags.slice(0, 3).map(t => <div key={t} style={{ width: 8, height: 8, borderRadius: '50%', background: t }} />)}
+          </div>
+        )}
+      </div>
       <span className="file-name">{item.name}</span>
     </div>
   )
@@ -1002,13 +1108,21 @@ function GridItem({ item, selected, onClick, onDoubleClick, onContextMenu }) {
 function ListItem({ item, selected, onClick, onDoubleClick, onContextMenu }) {
   const Icon = item.isDirectory ? FolderClosed : getCategoryIcon(item.type)
   const color = item.isDirectory ? '#dcb438' : getCategoryColor(item.type)
+  const tags = item.tags || []
 
   return (
     <div className={`file-list-item ${selected ? 'selected' : ''}`}
       onClick={onClick} onDoubleClick={onDoubleClick} onContextMenu={onContextMenu}>
       <div className="file-name-cell">
         <div className="file-icon-small"><Icon size={16} color={color} /></div>
-        <span>{item.name}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</span>
+          {tags.length > 0 && (
+            <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+              {tags.slice(0, 3).map(t => <div key={t} style={{ width: 8, height: 8, borderRadius: '50%', background: t }} />)}
+            </div>
+          )}
+        </div>
       </div>
       <span className="file-meta">{item.isDirectory ? 'File folder' : (item.extension?.toUpperCase() || '—')}</span>
       <span className="file-meta">{item.isDirectory ? '' : formatBytes(item.size)}</span>

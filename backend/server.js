@@ -20,6 +20,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Each virtual disk maps to a real directory on the filesystem.
 const DATA_ROOT = path.join(__dirname, 'data')
 const UNDO_LOG_PATH = path.join(__dirname, '.undo_log.json')
+const TRASH_PATH = path.join(__dirname, '.trash')
+const TAGS_DB_PATH = path.join(__dirname, '.tags.json')
 const VIRTUAL_DISKS = {
   'C:': path.join(DATA_ROOT, 'C'),
   'D:': path.join(DATA_ROOT, 'D'),
@@ -113,11 +115,20 @@ async function uniqueFilename(dir, filename) {
   }
 }
 
+// ── Tags DB ──────────────────────────────────────────────────────────
+async function getTagsDB() {
+  try { return JSON.parse(await fs.readFile(TAGS_DB_PATH, 'utf8')) } catch { return {} }
+}
+async function saveTagsDB(data) {
+  await fs.writeFile(TAGS_DB_PATH, JSON.stringify(data, null, 2))
+}
+
 // ── Initialize disk directories ──────────────────────────────────────
 async function initDirs() {
   for (const root of Object.values(VIRTUAL_DISKS)) {
     await fs.mkdir(root, { recursive: true })
   }
+  await fs.mkdir(TRASH_PATH, { recursive: true })
   // Create a sample folder inside C: for demo purposes
   const sampleDir = path.join(VIRTUAL_DISKS['C:'], 'MyFiles')
   await fs.mkdir(sampleDir, { recursive: true })
@@ -247,6 +258,7 @@ app.get('/api/files', async (req, res) => {
     }
 
     const entries = await fs.readdir(realPath, { withFileTypes: true })
+    const allTags = await getTagsDB()
     const items = []
 
     for (const entry of entries) {
@@ -276,6 +288,7 @@ app.get('/api/files', async (req, res) => {
           type: isDir ? 'folder' : getFileType(entry.name),
           category: isDir ? 'folder' : getCategory(entry.name),
           path: `${virtualPath}/${entry.name}`,
+          tags: allTags[`${virtualPath}/${entry.name}`] || [],
           childCount: isDir ? childCount : undefined,
         })
       } catch {
@@ -612,28 +625,170 @@ app.post('/api/upload', upload.array('files', 50), async (req, res) => {
   }
 })
 
-// ── POST /api/delete ────────────────────────────────────────────────
-// Delete a file or empty folder
-app.post('/api/delete', async (req, res) => {
+// ── POST /api/trash ──────────────────────────────────────────────────
+// Move a file/folder to the Recycle Bin (soft delete) instead of erasing
+app.post('/api/trash', async (req, res) => {
   try {
     const { path: virtualPath } = req.body
-    if (!virtualPath) {
-      return res.status(400).json({ error: 'path is required' })
-    }
+    if (!virtualPath) return res.status(400).json({ error: 'path is required' })
 
     const realPath = resolveVirtualPath(virtualPath)
-    if (!realPath) {
-      return res.status(400).json({ error: 'Invalid path' })
-    }
+    if (!realPath) return res.status(400).json({ error: 'Invalid path' })
 
-    const stat = await fs.stat(realPath)
-    if (stat.isDirectory()) {
-      await fs.rm(realPath, { recursive: true })
-    } else {
-      await fs.unlink(realPath)
+    await fs.stat(realPath) // throws if not found
+
+    const trashId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const originalName = path.basename(realPath)
+    const trashItemPath = path.join(TRASH_PATH, trashId)
+    const trashMetaPath = path.join(TRASH_PATH, `${trashId}.meta.json`)
+
+    // Move to trash
+    await fs.rename(realPath, trashItemPath)
+
+    // Write metadata sidecar
+    const meta = {
+      id: trashId,
+      originalName,
+      originalVirtualPath: virtualPath,
+      deletedAt: new Date().toISOString(),
     }
+    await fs.writeFile(trashMetaPath, JSON.stringify(meta, null, 2))
+
+    res.json({ success: true, id: trashId, name: originalName })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── POST /api/delete ─────────────────────────────────────────────────
+// Legacy hard-delete — now delegates to the trash endpoint for safety
+app.post('/api/delete', async (req, res) => {
+  // Forward to trash logic
+  req.url = '/api/trash'
+  try {
+    const { path: virtualPath } = req.body
+    if (!virtualPath) return res.status(400).json({ error: 'path is required' })
+    const realPath = resolveVirtualPath(virtualPath)
+    if (!realPath) return res.status(400).json({ error: 'Invalid path' })
+    await fs.stat(realPath)
+    const trashId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const originalName = path.basename(realPath)
+    const trashItemPath = path.join(TRASH_PATH, trashId)
+    const trashMetaPath = path.join(TRASH_PATH, `${trashId}.meta.json`)
+    await fs.rename(realPath, trashItemPath)
+    await fs.writeFile(trashMetaPath, JSON.stringify({
+      id: trashId, originalName, originalVirtualPath: virtualPath,
+      deletedAt: new Date().toISOString(),
+    }, null, 2))
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── GET /api/trash ───────────────────────────────────────────────────
+// List all items in the Recycle Bin
+app.get('/api/trash', async (req, res) => {
+  try {
+    await fs.mkdir(TRASH_PATH, { recursive: true })
+    const entries = await fs.readdir(TRASH_PATH)
+    const items = []
+    for (const entry of entries) {
+      if (!entry.endsWith('.meta.json')) continue
+      try {
+        const raw = await fs.readFile(path.join(TRASH_PATH, entry), 'utf8')
+        const meta = JSON.parse(raw)
+        // Get size of the trashed item
+        try {
+          const stat = await fs.stat(path.join(TRASH_PATH, meta.id))
+          meta.size = stat.isDirectory() ? null : stat.size
+          meta.isDirectory = stat.isDirectory()
+        } catch { meta.size = null; meta.isDirectory = false }
+        items.push(meta)
+      } catch { /* skip corrupt meta */ }
+    }
+    // Sort newest first
+    items.sort((a, b) => new Date(b.deletedAt) - new Date(a.deletedAt))
+    res.json({ items, count: items.length })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── POST /api/trash/restore ──────────────────────────────────────────
+// Restore a single item from trash back to its original location
+app.post('/api/trash/restore', async (req, res) => {
+  try {
+    const { id } = req.body
+    if (!id) return res.status(400).json({ error: 'id is required' })
+
+    const trashItemPath = path.join(TRASH_PATH, id)
+    const trashMetaPath = path.join(TRASH_PATH, `${id}.meta.json`)
+
+    const raw = await fs.readFile(trashMetaPath, 'utf8')
+    const meta = JSON.parse(raw)
+
+    const destReal = resolveVirtualPath(meta.originalVirtualPath)
+    if (!destReal) return res.status(400).json({ error: 'Original path is no longer valid' })
+
+    // Ensure destination directory exists
+    await fs.mkdir(path.dirname(destReal), { recursive: true })
+
+    // Avoid overwrite — pick unique name if needed
+    let finalPath = destReal
+    try {
+      await fs.access(destReal)
+      // Already exists — find unique name
+      const ext = path.extname(meta.originalName)
+      const base = path.basename(meta.originalName, ext)
+      let i = 1
+      while (true) {
+        const candidate = path.join(path.dirname(destReal), `${base} (restored ${i})${ext}`)
+        try { await fs.access(candidate); i++ } catch { finalPath = candidate; break }
+      }
+    } catch { /* dest doesn't exist — perfect */ }
+
+    await fs.rename(trashItemPath, finalPath)
+    await fs.unlink(trashMetaPath)
+
+    res.json({ success: true, restoredTo: toVirtualPath(finalPath) || meta.originalVirtualPath })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── POST /api/trash/delete ───────────────────────────────────────────
+// Permanently delete a single item from the Recycle Bin
+app.post('/api/trash/delete', async (req, res) => {
+  try {
+    const { id } = req.body
+    if (!id) return res.status(400).json({ error: 'id is required' })
+
+    const trashItemPath = path.join(TRASH_PATH, id)
+    const trashMetaPath = path.join(TRASH_PATH, `${id}.meta.json`)
+
+    try { await fs.rm(trashItemPath, { recursive: true }) } catch { /* already gone */ }
+    try { await fs.unlink(trashMetaPath) } catch { /* already gone */ }
 
     res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── POST /api/trash/empty ────────────────────────────────────────────
+// Permanently delete ALL items in the Recycle Bin
+app.post('/api/trash/empty', async (req, res) => {
+  try {
+    const entries = await fs.readdir(TRASH_PATH)
+    let count = 0
+    for (const entry of entries) {
+      try {
+        await fs.rm(path.join(TRASH_PATH, entry), { recursive: true })
+        count++
+      } catch { /* skip */ }
+    }
+    res.json({ success: true, deleted: count })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -672,12 +827,94 @@ app.post('/api/rename', async (req, res) => {
     await fs.rename(realPath, newPath)
 
     const parentVirtual = virtualPath.substring(0, virtualPath.lastIndexOf('/'))
+    const newVirtual = `${parentVirtual}/${safeName}`
+
+    // Migrate tags if any
+    const allTags = await getTagsDB()
+    if (allTags[virtualPath]) {
+      allTags[newVirtual] = allTags[virtualPath]
+      delete allTags[virtualPath]
+      await saveTagsDB(allTags)
+    }
+
     res.json({
       success: true,
       oldPath: virtualPath,
-      newPath: `${parentVirtual}/${safeName}`,
+      newPath: newVirtual,
       name: safeName,
     })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── POST /api/tags ───────────────────────────────────────────────────
+// Set list of tags for a file/folder path
+app.post('/api/tags', async (req, res) => {
+  try {
+    const { path: virtualPath, tags } = req.body
+    if (!virtualPath || !Array.isArray(tags)) {
+      return res.status(400).json({ error: 'path and tags array are required' })
+    }
+    const realPath = resolveVirtualPath(virtualPath)
+    if (!realPath) return res.status(400).json({ error: 'Invalid path' })
+
+    const allTags = await getTagsDB()
+    if (tags.length === 0) {
+      delete allTags[virtualPath]
+    } else {
+      allTags[virtualPath] = tags
+    }
+    await saveTagsDB(allTags)
+
+    res.json({ success: true, tags: allTags[virtualPath] || [] })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── GET /api/tags/files ──────────────────────────────────────────────
+// List all files and folders that have a specific tag color across all disks
+app.get('/api/tags/files', async (req, res) => {
+  try {
+    const color = req.query.color
+    if (!color) return res.status(400).json({ error: 'color is required' })
+
+    const allTags = await getTagsDB()
+    const items = []
+
+    for (const [vPath, tagsArr] of Object.entries(allTags)) {
+      if (tagsArr.includes(color)) {
+        const realPath = resolveVirtualPath(vPath)
+        if (!realPath) continue
+
+        try {
+          const stat = await fs.stat(realPath)
+          const isDir = stat.isDirectory()
+          const name = path.basename(realPath)
+          const ext = isDir ? '' : (name.split('.').pop() || '').toLowerCase()
+
+          items.push({
+            name,
+            isDirectory: isDir,
+            size: isDir ? 0 : stat.size,
+            modified: stat.mtime.toISOString(),
+            created: stat.birthtime.toISOString(),
+            extension: ext,
+            type: isDir ? 'folder' : getFileType(name),
+            category: isDir ? 'folder' : getCategory(name),
+            path: vPath,
+            tags: tagsArr,
+          })
+        } catch {
+          // File might have been physically deleted without updating tags db
+        }
+      }
+    }
+
+    // Sort newest modified first
+    items.sort((a, b) => new Date(b.modified) - new Date(a.modified))
+    res.json({ success: true, items, count: items.length })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+.env
+data/
+.trash/
+.undo_log.json
+.tags.json
+dist
+build
+.vscode/

@@ -1,34 +1,51 @@
-import { Routes, Route } from 'react-router-dom'
+import { useState, useCallback } from 'react'
+import { Routes, Route, useLocation } from 'react-router-dom'
 import Navbar from './Navbar.jsx'
 import LandingPage from './LandingPage.jsx'
 import Explorer from './App.jsx'
 import Dashboard from './Dashboard.jsx'
-
-// ── Floating Particles Canvas ────────────────────────────────────────
-function ParticleBackground() {
-    const canvasRef = { current: null }
-
-    return null // We'll use CSS animated background instead for better perf
-}
+import { ActivityProvider } from './ActivityContext.jsx'
+import ToastSystem from './ToastSystem.jsx'
+import ActivityFeed from './ActivityFeed.jsx'
+import RecycleBin from './RecycleBin.jsx'
 
 export default function AppShell() {
+    const location = useLocation()
+    const isHome = location.pathname === '/'
+    const [trashOpen, setTrashOpen] = useState(false)
+
+    const openTrash = useCallback(() => setTrashOpen(true), [])
+    const closeTrash = useCallback(() => setTrashOpen(false), [])
+
     return (
-        <div className="app-shell">
-            {/* Animated gradient background */}
-            <div className="animated-bg" />
-            <div className="noise-overlay" />
+        <ActivityProvider>
+            <Navbar onOpenTrash={openTrash} />
 
-            {/* Navbar */}
-            <Navbar />
+            {/* ── Landing page: full cosmic shell ──────── */}
+            {isHome && <LandingPage />}
 
-            {/* Routes */}
-            <div className="page-content">
-                <Routes>
-                    <Route path="/" element={<LandingPage />} />
-                    <Route path="/explorer" element={<Explorer />} />
-                    <Route path="/dashboard" element={<Dashboard />} />
-                </Routes>
-            </div>
-        </div>
+            {/* ── Inner pages: original glass shell ────── */}
+            {!isHome && (
+                <div className="app-shell">
+                    <div className="animated-bg" />
+                    <div className="noise-overlay" />
+                    <div className="page-content">
+                        <Routes>
+                            <Route path="/explorer"  element={<Explorer />} />
+                            <Route path="/dashboard" element={<Dashboard />} />
+                        </Routes>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Global overlays (always mounted) ─────── */}
+            <ToastSystem />
+            <ActivityFeed />
+            <RecycleBin
+                open={trashOpen}
+                onClose={closeTrash}
+                onRestored={closeTrash}
+            />
+        </ActivityProvider>
     )
 }
