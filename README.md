@@ -4,7 +4,7 @@
 
 This project goes beyond simple uploading and downloading by implementing an authentic "Virtual File System" on the backend, enabling features like native OS color tagging, soft-delete via a Recycle Bin, atomic "Undo" functionality, and smart file organization.
 
-![FileOS Screenshot](https://github.com/kanhaiyak23/File_organizer/frotend/assets/placeholder.png) 
+![FileOS Screenshot](https://github.com/kanhaiyak23/File_organizer/frontend/assets/placeholder.png) 
 
 ## 🌟 Key Features
 
