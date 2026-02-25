@@ -30,6 +30,7 @@ import {
   Calendar,
   HardDriveIcon,
   RotateCcw,
+  ArrowDownUp,
 } from 'lucide-react'
 import { useActivity } from './ActivityContext.jsx'
 
@@ -531,6 +532,35 @@ export default function App() {
           </button>
           <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }}
             onChange={e => { uploadFiles(e.target.files); e.target.value = '' }} />
+          <div className="toolbar-separator" />
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Sort:</span>
+            <select
+              style={{ 
+                height: 32, padding: '0 8px', background: 'var(--bg-card)', 
+                border: '1px solid var(--border-color)', borderRadius: 6, 
+                color: 'var(--text-primary)', outline: 'none', cursor: 'pointer',
+                fontSize: 13
+              }}
+              value={sortBy}
+              onChange={e => { setSortBy(e.target.value); setSortDir('asc'); }}
+            >
+              <option value="name">Name</option>
+              <option value="type">Type</option>
+              <option value="size">Size</option>
+              <option value="modified">Date Added</option>
+            </select>
+            <button
+              className="toolbar-btn"
+              onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+              title={`Sort ${sortDir === 'asc' ? 'Ascending' : 'Descending'}`}
+              style={{ width: 32, padding: 0, justifyContent: 'center' }}
+            >
+              <ArrowDownUp size={14} style={{ transform: sortDir === 'asc' ? 'scaleY(1)' : 'scaleY(-1)', transition: 'transform 0.2s' }} />
+            </button>
+          </div>
+
           <div className="toolbar-separator" />
           <div className="view-toggle">
             <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')} title="Grid view">
